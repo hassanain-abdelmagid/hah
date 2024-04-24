@@ -1,7 +1,10 @@
 
 
 
-export REGION="${ZONE%-*}"
+
+gcloud config set compute/region $REGION
+export PROJECT_ID=$(gcloud config get-value project)
+
 
 gcloud services enable \
   artifactregistry.googleapis.com \
@@ -13,41 +16,25 @@ gcloud services enable \
   pubsub.googleapis.com
 
 
-sleep 70
 
+gsutil mb -l $REGION gs://$BUCKET_NAME
 
-PROJECT_NUMBER=$(gcloud projects describe $DEVSHELL_PROJECT_ID --format='value(projectNumber)')
-
-
-gcloud projects add-iam-policy-binding $DEVSHELL_PROJECT_ID \
-    --member=serviceAccount:$PROJECT_NUMBER-compute@developer.gserviceaccount.com \
-    --role=roles/eventarc.eventReceiver
-
-
-sleep 20
-
-SERVICE_ACCOUNT="$(gsutil kms serviceaccount -p $DEVSHELL_PROJECT_ID)"
-
-gcloud projects add-iam-policy-binding $DEVSHELL_PROJECT_ID \
-    --member="serviceAccount:${SERVICE_ACCOUNT}" \
-    --role='roles/pubsub.publisher'
-
-sleep 20
-
-
-gcloud projects add-iam-policy-binding $DEVSHELL_PROJECT_ID \
-    --member=serviceAccount:service-$PROJECT_NUMBER@gcp-sa-pubsub.iam.gserviceaccount.com \
-    --role=roles/iam.serviceAccountTokenCreator
-
-sleep 20
-
-
-gsutil mb -l $REGION gs://$DEVSHELL_PROJECT_ID-bucket
 
 gcloud pubsub topics create $TOPIC_NAME
 
-mkdir quicklab
-cd quicklab
+
+
+PROJECT_NUMBER=$(gcloud projects list --filter="project_id:$PROJECT_ID" --format='value(project_number)')
+SERVICE_ACCOUNT=$(gsutil kms serviceaccount -p $PROJECT_NUMBER)
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member serviceAccount:$SERVICE_ACCOUNT \
+  --role roles/pubsub.publisher
+  
+
+mkdir ~/quicklab && cd $_
+touch index.js && touch package.json
+
 
 cat > index.js <<'EOF_END'
 const functions = require('@google-cloud/functions-framework');
@@ -57,7 +44,7 @@ const gcs = new Storage();
 const { PubSub } = require('@google-cloud/pubsub');
 const imagemagick = require("imagemagick-stream");
 
-functions.cloudEvent('$FUNCTION_NAME', cloudEvent => {
+functions.cloudEvent('memories-thumbnail-maker', cloudEvent => {
   const event = cloudEvent.data;
 
   console.log(`Event: ${event}`);
@@ -67,7 +54,7 @@ functions.cloudEvent('$FUNCTION_NAME', cloudEvent => {
   const bucketName = event.bucket;
   const size = "64x64"
   const bucket = gcs.bucket(bucketName);
-  const topicName = "$TOPIC_NAME";
+  const topicName = "memories-topic-374";
   const pubsub = new PubSub();
   if ( fileName.search("64x64_thumbnail") == -1 ){
     // doesn't have a thumbnail, get the filename extension
@@ -118,11 +105,15 @@ functions.cloudEvent('$FUNCTION_NAME', cloudEvent => {
     console.log(`gs://${bucketName}/${fileName} already has a thumbnail`);
   }
 });
+
 EOF_END
 
-sed -i "8c\functions.cloudEvent('$FUNCTION_NAME', cloudEvent => { " index.js
+
+sed -i "8c\functions.cloudEvent('$FUNCTION_NAME', cloudEvent => {" index.js
 
 sed -i "18c\  const topicName = '$TOPIC_NAME';" index.js
+
+
 
 cat > package.json <<EOF_END
 {
@@ -148,27 +139,17 @@ EOF_END
 
 
 
-PROJECT_ID=$(gcloud config get-value project)
-BUCKET_SERVICE_ACCOUNT="${PROJECT_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
-
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member=serviceAccount:$BUCKET_SERVICE_ACCOUNT \
-  --role=roles/pubsub.publisher
-
-
-
-
-# Your existing deployment command
-deploy_function() {
-    gcloud functions deploy $FUNCTION_NAME \
-    --gen2 \
-    --runtime nodejs20 \
-    --trigger-resource $DEVSHELL_PROJECT_ID-bucket \
-    --trigger-event google.storage.object.finalize \
-    --entry-point $FUNCTION_NAME \
-    --region=$REGION \
-    --source . \
-    --quiet
+deploy_function () {
+gcloud functions deploy $FUNCTION_NAME \
+  --gen2 \
+  --runtime nodejs20 \
+  --entry-point $FUNCTION_NAME \
+  --source . \
+  --region $REGION \
+  --trigger-bucket $BUCKET_NAME \
+  --trigger-location $REGION \
+  --max-instances 1 \
+  --quiet
 }
 
 # Variables
@@ -190,12 +171,9 @@ while true; do
 done
 
 
+wget https://storage.googleapis.com/cloud-training/gsp315/map.jpg 
+
+gsutil cp map.jpg gs://$BUCKET_NAME
 
 
-curl -o map.jpg https://storage.googleapis.com/cloud-training/gsp315/map.jpg
-
-gsutil cp map.jpg gs://$DEVSHELL_PROJECT_ID-bucket/map.jpg
-
-gcloud projects remove-iam-policy-binding $DEVSHELL_PROJECT_ID \
---member=user:$USERNAME2 \
---role=roles/viewer
+1
